@@ -1,0 +1,202 @@
+### **1. Introduction**
+
+**1.1 Purpose**
+
+Build a Cairo-based prediction market platform enabling:
+
+1. Sports betting (Phase 1)
+2. Commodity speculation (Phase 2)
+3. Options contracts (Phase 3)
+For the Kenyan market using USDC/USDT.
+
+**1.2 Scope**
+
+- **In-scope**: Gasless betting, oracle resolution, USDC payments, mobile UI
+- **Out-of-scope**: Fiat ramps (assume crypto-native users), cross-chain support
+
+---
+
+### **2. System Architecture**
+
+```mermaid
+graph TD
+    A[User] --> B{{StarkNet AA Wallet}}
+    B --> C[StarkBet Contract]
+    C --> D[Pragma Oracle]
+    C --> E[USDC Contract]
+    D --> F[SportMonk API]
+    D --> G[Chainlink Commodities]
+    C --> H[Web/Mobile UI]
+
+```
+
+---
+
+### **3. Functional Requirements**
+
+### **3.1 Core Contract (Cairo)**
+
+| ID | Requirement | Technical Spec |
+| --- | --- | --- |
+| FR1 | Deposit USDC | `fn deposit(amount: u256)` via StarkGate bridge |
+| FR2 | Gasless Bet Placement | AA-sponsored `fn bet(match_id: u32, amount: u256, outcome: u8)` |
+| FR3 | Match Resolution | `fn resolve(match_id: u32)` calling Pragma Oracle |
+| FR4 | Payout Calculation | `calculate_payout()` with 1% protocol fee using integer math |
+| FR5 | Commodity Market Creation | `fn create_commodity_market(asset_id: u32, expiry: u64, strike: u256)` (V2) |
+| FR6 | Options Trading | `struct Option { strike: u256, expiry: u64, is_put: bool }` (V3) |
+
+### **3.2 Oracle Integration**
+
+| ID | Requirement | Implementation |
+| --- | --- | --- |
+| OR1 | Football Match Resolution | Pragma Node > SportMonk API > Signed result to contract |
+| OR2 | Commodity Price Feeds | Chainlink Nairobi Maize Price Feed + 10-min heartbeat |
+| OR3 | Result Dispute Mechanism | DAO vote for contested resolutions (fallback) |
+
+### **3.3 User Interface**
+
+| ID | Requirement | Detail |
+| --- | --- | --- |
+| UI1 | Mobile-First Web App | Next.js + StarkNet React |
+| UI2 | Bet Slip Interface | 1-click betting with AA wallet integration |
+| UI3 | Live Match Tracking | Embedded SportMonk widget with countdown |
+| UI4 | Commodity Charts | TradingView Lite integration for maize/oil prices |
+
+---
+
+### **4. Non-Functional Requirements**
+
+| ID | Requirement | Metric | Test Case |
+| --- | --- | --- | --- |
+| NF1 | Transaction Speed | <2 sec bet placement | Load test with 100 concurrent users |
+| NF2 | Resolution Latency | <5 sec after oracle trigger | Mock Pragma response |
+| NF3 | Cost per Bet | $0.001 avg (sponsored gas) | Testnet gas profiling |
+| NF4 | Uptime | 99.9% for core contract | StarkNet mainnet monitoring |
+| NF5 | Security | Formal verification of payouts | Cairo-verifier + Giza |
+
+---
+
+### **5. Data Structures (Cairo)**
+
+### **5.1 Storage Layout**
+
+```rust
+#[storage]
+struct Storage {
+    // User balances (USDC with 6 decimals)
+    balances: LegacyMap<ContractAddress, u256>,
+    // Active bets: (user, match_id) → (amount, outcome)
+    active_bets: LegacyMap<(ContractAddress, u32), Bet>,
+    // Match database
+    matches: LegacyMap<u32, Match>,
+    // Commodity markets (V2)
+    commodities: LegacyMap<u32, CommodityMarket>,
+    // Options ledger (V3)
+    options: LegacyMap<(ContractAddress, u32), Option>
+}
+
+#[derive(Drop, Serde)]
+struct Match {
+    team_a: felt252, // Short name (e.g. "AFC Leopards")
+    team_b: felt252,
+    start_time: u64,
+    resolved: bool,
+    winning_outcome: u8 // 0=team_a, 1=draw, 2=team_b
+}
+
+#[derive(Drop, Serde)]
+struct Bet {
+    amount: u256,
+    predicted_outcome: u8,
+    claimed: bool
+}
+
+```
+
+---
+
+### **6. Oracle Workflow**
+
+```mermaid
+sequenceDiagram
+    Contract->>Pragma Node: request_result(match_id)
+    Pragma Node->>SportMonk: HTTP GET /matches/{id}
+    SportMonk-->>Pragma Node: JSON response
+    Pragma Node->>Contract: submit_result(match_id, outcome)
+    Contract->>Contract: distribute_payouts()
+
+```
+
+---
+
+### **7. Security Specifications**
+
+**7.1 Critical Threats**
+
+1. Oracle manipulation*Mitigation*: Require 3/5 Pragma node signatures
+2. Front-running resolutions*Mitigation*: Resolution cooldown period (5 mins)
+3. Reentrancy attacks*Mitigation*: Cairo's native non-reentrant model
+
+**7.2 Formal Verification Targets**
+
+```
+// Payout invariant: Total balance = user_balances + house_fees
+#[view]
+fn total_supply_invariant() -> bool {
+    let total: u256 = 0;
+    for (user, balance) in balances.iter() {
+        total += balance;
+    }
+    total == usdc_balance() + fees_collected.read()
+}
+
+```
+
+---
+
+### **8. Test Plan**
+
+**8.1 Unit Tests**
+
+```rust
+#[test]
+fn test_win_payout() {
+    let user = test_address();
+    deposit(user, 1000000); // $10 USDC
+    place_bet(user, MATCH_ID, 500000, WINNING_OUTCOME);
+    resolve_match(MATCH_ID, WINNING_OUTCOME);
+    assert(balances.read(user) == 1495000, "Should get $14.95 after 1% fee");
+}
+
+```
+
+**8.2 Stress Tests**
+
+- Scenario: 50 games resolve simultaneously
+- Metric: Gas consumption < 20M wei
+- Tool: StarkNet state diffs profiling
+
+**8.3 User Acceptance**
+
+- Test Group: Nairobi Crypto Traders Telegram (50 users)
+- Success Criteria: 90% success rate on bet placement
+
+---
+
+### **9. Deployment Roadmap**
+
+| **Phase** | **Timeline** | **Milestone** | **KPI** |
+| --- | --- | --- | --- |
+| **Sports MVP** | Week 1-3 | Mainnet launch (EPL/KPL) | 50 active users |
+| **AA Optimization** | Week 4 | Gas sponsorship integration | <$0.01 cost/user |
+| **Commodities** | Week 5 | Maize markets live | 20% user adoption |
+| **Options** | Week 6 | Call/Put contracts | $1k options volume |
+
+---
+
+### **10. Support Documents**
+
+1. [SportMonk API Documentation](https://sportmonks.com/docs/football)
+2. [Pragma Oracle Contract Interfaces](https://docs.pragmaoracle.com/)
+3. [StarkNet AA Gas Sponsorship Guide](https://docs.starknet.io/account-abstraction/)
+
